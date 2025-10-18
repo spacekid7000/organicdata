@@ -1,0 +1,553 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>GlitchSynth Neo — Organic Engine</title>
+
+<!-- Tone.js + noUiSlider -->
+<script src="https://unpkg.com/tone@14.7.77/build/Tone.js"></script>
+<link href="https://cdnjs.cloudflare.com/ajax/libs/noUiSlider/15.7.0/nouislider.min.css" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/noUiSlider/15.7.0/nouislider.min.js"></script>
+
+<style>
+  /* --- Palette & base --- */
+  :root{
+    --bg:#0b0e10;
+    --panel:#0f1314;
+    --muted:#1a1d1e;
+    --teal:#00f6d2;
+    --accent:#9feee6;
+    --danger:#ff6b6b;
+    --glass: rgba(255,255,255,0.02);
+    --radius:8px;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, 'Roboto Mono', monospace;
+  }
+  html,body{height:100%;margin:0;background:var(--bg);font-family:Inter,system-ui,Arial;color:var(--accent);-webkit-font-smoothing:antialiased}
+  *{box-sizing:border-box}
+
+  /* --- Frame & header --- */
+  .frame{height:100vh;padding:18px;display:flex;flex-direction:column;gap:12px}
+  header{display:flex;align-items:center;gap:12px;padding:10px;border-radius:10px;background:linear-gradient(180deg,rgba(255,255,255,0.018),transparent);border:1px solid rgba(255,255,255,0.02)}
+  .brand{font-weight:700;color:#fff}
+  .controls{margin-left:auto;display:flex;gap:10px;align-items:center}
+  .btn{background:transparent;border:1px solid rgba(255,255,255,0.04);color:var(--teal);padding:8px 12px;border-radius:8px;cursor:pointer;font-weight:600}
+  .btn.primary{background:var(--teal);color:#052; border:none}
+  .top-slider{width:220px}
+
+  /* --- Workspace (fills remaining area) --- */
+  main{flex:1;position:relative;overflow:hidden;border-radius:10px}
+  svg.cables{position:absolute;inset:0;pointer-events:none;z-index:5}
+
+  /* --- Grid: fixed cells, no resizing --- */
+  .grid{
+    width:100%; height:100%;
+    display:grid;
+    grid-template-columns:repeat(4,1fr);
+    grid-template-rows:repeat(2,1fr);
+    gap:12px;
+    padding:14px;
+  }
+  /* Responsive: 2 columns on narrow screens, 1 column on very small */
+  @media(max-width:1100px){ .grid{grid-template-columns:repeat(2,1fr); grid-auto-rows: calc((100vh - 220px)/4);} }
+  @media(max-width:640px){ .grid{grid-template-columns:repeat(1,1fr); grid-auto-rows: calc((100vh - 260px)/8);} }
+
+  .module{
+    background:linear-gradient(180deg,var(--panel), #0b0b0b);
+    border-radius:10px;padding:12px;position:relative;display:flex;flex-direction:column;gap:8px;
+    box-shadow:0 8px 30px rgba(0,0,0,0.7);border:1px solid rgba(255,255,255,0.02);
+    min-height:0; /* keep sizes stable */
+    overflow:visible;
+    transform: translateZ(0);
+  }
+  .module .head{display:flex;align-items:center;gap:8px}
+  .title{font-weight:700;color:#fff}
+  .subtitle{font-size:12px;color:#9fe}
+  .content{display:flex;flex-direction:column;gap:8px;flex:1;min-height:80px}
+  /* fixed visual area size inside module (prevent expansion) */
+  .visual-wrap{height:96px;flex:0 0 96px;border-radius:6px;overflow:hidden;background:#070909}
+  canvas.module-canvas{width:100%;height:100%;display:block}
+
+  .mini-row{display:flex;align-items:center;gap:8px;justify-content:space-between}
+  .knob{width:68%;min-width:110px}
+  .expand-toggle{background:transparent;border:1px solid rgba(255,255,255,0.03);color:#fff;padding:6px 8px;border-radius:6px;cursor:pointer}
+
+  /* slide-down inline panel: hidden by default; uses max-height to animate without affecting rest of grid */
+  .panel{overflow:hidden;max-height:0;transition:max-height 280ms cubic-bezier(.2,.9,.2,1);background:linear-gradient(180deg,rgba(255,255,255,0.01),transparent);border-radius:8px;padding:0 8px;margin-top:6px}
+  .panel.open{max-height:220px;padding:10px 8px}
+  .panel .row{display:flex;gap:10px;flex-wrap:wrap}
+
+  /* ports */
+  .port{position:absolute;width:14px;height:14px;border-radius:50%;display:flex;align-items:center;justify-content:center;pointer-events:auto}
+  .port.input{left:-7px;top:50%;transform:translateY(-50%);background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.04)}
+  .port.output{right:-7px;top:50%;transform:translateY(-50%);background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.04)}
+  .port .dot{width:8px;height:8px;border-radius:50%}
+  .port .dot.out{background:var(--teal)}
+  .port .dot.in{background:#fff}
+
+  /* small hints */
+  footer{height:34px;display:flex;align-items:center;gap:12px;padding:6px 8px;color:#9aa;font-size:13px}
+
+  /* subtle scanlines overlay (light) */
+  .scanline::after{content:'';position:absolute;inset:0;pointer-events:none;background-image:repeating-linear-gradient(transparent, rgba(0,0,0,0.12) 1px, transparent 2px);opacity:0.06;mix-blend-mode:overlay}
+</style>
+</head>
+<body>
+<div class="frame scanline">
+  <header>
+    <div class="brand">GlitchSynth Neo</div>
+    <div style="font-size:13px;color:#bfe;margin-left:8px">Organic Engine · subtle visuals</div>
+
+    <div class="controls">
+      <button class="btn" id="playBtn">▶ Play</button>
+      <button class="btn" id="stopBtn">⏹ Stop</button>
+      <button class="btn primary" id="randomBtn">RANDOM (R)</button>
+      <button class="btn" id="evolveBtn">EVOLVE (E)</button>
+      <div style="display:flex;align-items:center;gap:8px">
+        <div style="font-size:13px;color:#cfe">Energy</div>
+        <div id="energyWrap" class="top-slider"></div>
+      </div>
+      <button class="btn" id="resetBtn">RESET (Esc)</button>
+    </div>
+  </header>
+
+  <main>
+    <svg class="cables" id="cables"></svg>
+
+    <div class="grid" id="grid">
+      <!-- module template: id prefixes used in JS -->
+      <div class="module" id="m-perlin">
+        <div class="head"><div><div class="title">Perlin LFO</div><div class="subtitle">smooth organic modulation</div></div><button class="expand-toggle" data-target="perlin-panel">Expand</button></div>
+        <div class="content">
+          <div class="visual-wrap"><canvas id="v-perlin" class="module-canvas"></canvas></div>
+          <div class="mini-row"><div id="perlin-knob" class="knob"></div><button class="btn" id="perlin-burst">Burst</button></div>
+          <div class="panel" id="perlin-panel">
+            <div class="row">
+              <div style="min-width:160px"><label>Freq</label><div id="p-freq"></div></div>
+              <div style="min-width:160px"><label>Depth</label><div id="p-depth"></div></div>
+              <div style="min-width:140px"><label>Offset</label><div id="p-off"></div></div>
+            </div>
+          </div>
+        </div>
+        <div class="port output" data-port="perlin:out"><div class="dot out"></div></div>
+      </div>
+
+      <div class="module" id="m-worley">
+        <div class="head"><div><div class="title">Worley</div><div class="subtitle">cellular noise</div></div><button class="expand-toggle" data-target="worley-panel">Expand</button></div>
+        <div class="content">
+          <div class="visual-wrap"><canvas id="v-worley" class="module-canvas"></canvas></div>
+          <div class="mini-row"><div style="color:#9fe">pink noise</div><button class="btn" id="worley-burst">Pulse</button></div>
+          <div class="panel" id="worley-panel">
+            <div class="row"><div style="min-width:160px"><label>Filter</label><div id="w-filter"></div></div><div style="min-width:160px"><label>Intensity</label><div id="w-int"></div></div></div>
+          </div>
+        </div>
+        <div class="port output" data-port="worley:out"><div class="dot out"></div></div>
+      </div>
+
+      <div class="module" id="m-bitnoise">
+        <div class="head"><div><div class="title">BitNoise</div><div class="subtitle">digital crackle</div></div><button class="expand-toggle" data-target="bit-panel">Expand</button></div>
+        <div class="content">
+          <div class="visual-wrap"><canvas id="v-bit" class="module-canvas"></canvas></div>
+          <div class="mini-row"><div style="color:#9fe">bit patterns</div><button class="btn" id="bit-burst">Mutate</button></div>
+          <div class="panel" id="bit-panel">
+            <div class="row"><div style="min-width:160px"><label>Crush</label><div id="b-crush"></div></div><div style="min-width:160px"><label>Density</label><div id="b-den"></div></div></div>
+          </div>
+        </div>
+        <div class="port output" data-port="bitnoise:out"><div class="dot out"></div></div>
+      </div>
+
+      <div class="module" id="m-fm">
+        <div class="head"><div><div class="title">FM Carrier</div><div class="subtitle">tone generator</div></div><button class="expand-toggle" data-target="fm-panel">Expand</button></div>
+        <div class="content">
+          <div class="visual-wrap"><canvas id="v-fm" class="module-canvas"></canvas></div>
+          <div class="mini-row"><div id="fm-index" class="knob"></div><button class="btn" id="fm-trig">Trig</button></div>
+          <div class="panel" id="fm-panel"><div class="row"><div style="min-width:160px"><label>Index</label><div id="f-index"></div></div><div style="min-width:160px"><label>Harm</label><div id="f-harm"></div></div></div></div>
+        </div>
+        <div class="port input" data-port="fm:in"></div>
+        <div class="port output" data-port="fm:out"><div class="dot out"></div></div>
+      </div>
+
+      <div class="module" id="m-fb">
+        <div class="head"><div><div class="title">Feedback Buffer</div><div class="subtitle">loop & melt</div></div><button class="expand-toggle" data-target="fb-panel">Expand</button></div>
+        <div class="content">
+          <div class="visual-wrap"><canvas id="v-fb" class="module-canvas"></canvas></div>
+          <div class="mini-row"><div id="fb-mix" class="knob"></div><button class="btn" id="fb-burst">Loop</button></div>
+          <div class="panel" id="fb-panel"><div class="row"><div style="min-width:160px"><label>Delay(ms)</label><div id="fb-delay"></div></div><div style="min-width:160px"><label>Feedback</label><div id="fb-feedback"></div></div></div></div>
+        </div>
+        <div class="port input" data-port="fb:in"></div>
+        <div class="port output" data-port="fb:out"><div class="dot out"></div></div>
+      </div>
+
+      <div class="module" id="m-chaos">
+        <div class="head"><div><div class="title">Chaos Attractor</div><div class="subtitle">Lorenz modulator</div></div><button class="expand-toggle" data-target="chaos-panel">Expand</button></div>
+        <div class="content">
+          <div class="visual-wrap"><canvas id="v-chaos" class="module-canvas"></canvas></div>
+          <div class="mini-row"><button class="btn" id="chaos-nudge">Nudge</button><div style="color:#9fe">mod source</div></div>
+          <div class="panel" id="chaos-panel"><div class="row"><div style="min-width:160px"><label>Sigma</label><div id="ch-sigma"></div></div><div style="min-width:160px"><label>Rho</label><div id="ch-rho"></div></div></div></div>
+        </div>
+        <div class="port output" data-port="chaos:out"><div class="dot out"></div></div>
+      </div>
+
+      <div class="module" id="m-ks">
+        <div class="head"><div><div class="title">Karplus-Strong</div><div class="subtitle">plucked string</div></div><button class="expand-toggle" data-target="ks-panel">Expand</button></div>
+        <div class="content">
+          <pre id="v-ks" class="module-canvas" style="padding:8px;margin:0;height:96px;font-family:var(--mono);font-size:13px;">pluck: [---]</pre>
+          <div class="mini-row"><div id="ks-damp" class="knob"></div><button class="btn" id="ks-pluck">Pluck</button></div>
+          <div class="panel" id="ks-panel"><div class="row"><div style="min-width:160px"><label>Damping</label><div id="ks-damp2"></div></div><div style="min-width:160px"><label>Tune</label><div id="ks-tune"></div></div></div></div>
+        </div>
+        <div class="port input" data-port="ks:in"></div>
+        <div class="port output" data-port="ks:out"><div class="dot out"></div></div>
+      </div>
+
+      <div class="module" id="m-rand">
+        <div class="head"><div><div class="title">Randomizer</div><div class="subtitle">glitch stutter</div></div><button class="expand-toggle" data-target="rand-panel">Expand</button></div>
+        <div class="content">
+          <div class="visual-wrap"><canvas id="v-rand" class="module-canvas"></canvas></div>
+          <div class="mini-row"><button class="btn" id="rand-burst">Burst</button><div style="color:#9fe">sr/bit</div></div>
+          <div class="panel" id="rand-panel"><div class="row"><div style="min-width:160px"><label>Crush</label><div id="r-crush"></div></div><div style="min-width:160px"><label>Rate</label><div id="r-rate"></div></div></div></div>
+        </div>
+        <div class="port output" data-port="rand:out"><div class="dot out"></div></div>
+      </div>
+
+    </div>
+  </main>
+
+  <footer><div id="status">Ready · Space Play/Pause · R Randomize · E Evolve · Esc Reset</div></footer>
+</div>
+
+<!-- SCRIPT: audio engine, UI, mutation, visuals -->
+<script>
+/* GlitchSynth Neo — Full implementation (single file)
+   - Fullscreen responsive grid
+   - Inline slide-down panels (no layout changes)
+   - Bio-LFOs, Mutation Sequencer, Random Patch Generator
+   - Master FX chain, Tone.js nodes
+   - Subtle canvas visuals
+*/
+
+/* ========= STATE ========= */
+const STATE = {
+  audioInited: false,
+  nodes: {},        // Tone nodes & helpers
+  bio: {},          // bio-LFO clusters per module
+  mutation: {rate:2500, amount:0.06, running:true},
+  connections: [],
+  selectedOut: null,
+  energy: 0.6
+};
+
+const cablesSvg = document.getElementById('cables');
+
+/* ========= AUDIO: initialize nodes & FX chain ========= */
+async function initAudio(){
+  if(STATE.audioInited) return;
+  await Tone.start();
+  STATE.audioInited = true;
+
+  // master FX chain: bitcrush -> delay -> filter -> reverb -> master
+  const masterGain = new Tone.Gain(0.95).toDestination();
+  const bit = new Tone.BitCrusher(8);
+  const delay = new Tone.FeedbackDelay('8n', 0.36);
+  const filt = new Tone.Filter(16000,'lowpass');
+  const rev = new Tone.Reverb({decay:1.8,wet:0.12});
+  bit.connect(delay); delay.connect(filt); filt.connect(rev); rev.connect(masterGain);
+
+  STATE.nodes.master = masterGain;
+  STATE.nodes.bit = bit; STATE.nodes.delay = delay; STATE.nodes.filter = filt; STATE.nodes.reverb = rev;
+
+  // Perlin LFO (control)
+  STATE.nodes.perlin = new Tone.LFO(1,-1,1).start();
+
+  // Worley noise
+  STATE.nodes.worleyNoise = new Tone.Noise('pink').start();
+  STATE.nodes.worleyFilter = new Tone.Filter(1000,'bandpass');
+  STATE.nodes.worleyNoise.connect(STATE.nodes.worleyFilter);
+  STATE.nodes.worleyFilter.connect(rev);
+
+  // BitNoise: procedural noise bursts via BitCrusher on short white noise
+  STATE.nodes.bitNoise = { play: ()=> {
+    const n = new Tone.Noise('white').start();
+    const crush = new Tone.BitCrusher(6).toDestination();
+    n.connect(crush);
+    setTimeout(()=>{ try{ n.stop(); n.disconnect(); crush.dispose(); }catch(e){} }, 400);
+  }};
+
+  // FM Synth
+  STATE.nodes.fm = new Tone.FMSynth({modulationIndex:6,harmonicity:2});
+  STATE.nodes.fm.connect(bit);
+
+  // Feedback buffer
+  STATE.nodes.fb = new Tone.FeedbackDelay('8n',0.45);
+  STATE.nodes.fb.connect(filt);
+
+  // Chaos storage
+  STATE.nodes.chaos = {value:0};
+
+  // Karplus-Strong
+  STATE.nodes.ks = new Tone.PluckSynth();
+  STATE.nodes.ks.connect(bit);
+
+  // Randomizer trigger
+  STATE.nodes.rand = { trigger: ()=> { const s = new Tone.MembraneSynth().connect(STATE.nodes.delay); s.triggerAttackRelease('C2','8n'); } };
+
+  // initialize bio clusters for modules
+  ['perlin','worley','bitnoise','fm','fb','chaos','ks','rand'].forEach(m=> initBio(m));
+}
+
+/* ========= BIO-LFO CLUSTERS ========= */
+function initBio(moduleId){
+  STATE.bio[moduleId] = {cells:[], output:0};
+  for(let i=0;i<3;i++){
+    STATE.bio[moduleId].cells.push({val:Math.random()*2-1, vel:(Math.random()*0.02-0.01)});
+  }
+}
+function stepBio(moduleId){
+  const cluster = STATE.bio[moduleId];
+  if(!cluster) return 0;
+  let sum=0;
+  cluster.cells.forEach(c=>{
+    c.vel += (Math.random()*0.02-0.01) - c.val*0.002;
+    c.val += c.vel; c.vel *= 0.93; c.val = Math.max(-1, Math.min(1, c.val));
+    sum += c.val;
+  });
+  cluster.output = sum/cluster.cells.length;
+  return cluster.output;
+}
+
+/* run bio loop: modulate small things */
+function startBioLoop(){
+  setInterval(()=>{
+    Object.keys(STATE.bio).forEach(id=>{
+      const v = stepBio(id);
+      // apply gentle modulation to some node params (non-layout affecting)
+      if(id==='perlin' && STATE.nodes.perlin) STATE.nodes.perlin.frequency.value = Math.max(0.05, 0.8 + v*0.8 * STATE.energy);
+      if(id==='fb' && STATE.nodes.fb) STATE.nodes.fb.wet.value = Math.max(0.0, 0.12 + (v+1)/2 * 0.6 * STATE.energy);
+      if(id==='chaos') STATE.nodes.chaos.value = v*2;
+    });
+  }, 120);
+}
+
+/* ========= MUTATION SEQUENCER ========= */
+let mutationTimer = null;
+function startMutation(){
+  if(mutationTimer) clearInterval(mutationTimer);
+  mutationTimer = setInterval(()=>{
+    if(!STATE.mutation.running) return;
+    // choose a slider element to nudge
+    const knobs = ['perlin-knob','fm-index','fb-mix','ks-damp','p-freq','f-index'];
+    const kid = knobs[Math.floor(Math.random()*knobs.length)];
+    const el = document.getElementById(kid);
+    if(el && el.noUiSlider){
+      const cur = Number(el.noUiSlider.get());
+      const rng = el.noUiSlider.options.range; const min = Number(rng.min); const max = Number(rng.max);
+      const step = (max-min) * (Math.random()*STATE.mutation.amount*2 - STATE.mutation.amount) * STATE.energy;
+      let nv = cur + step; nv = Math.max(min, Math.min(max, nv));
+      el.noUiSlider.set(nv);
+    } else {
+      // nudge node values if slider not present
+      if(STATE.nodes.fm) STATE.nodes.fm.modulationIndex = Math.max(0, STATE.nodes.fm.modulationIndex + (Math.random()*2-1)*0.5*STATE.energy);
+    }
+  }, Math.max(300, STATE.mutation.rate * (1 - STATE.energy)));
+}
+
+/* Evolve pulse: stronger mutation burst */
+function evolvePulse(){
+  if(!STATE.audioInited) initAudio();
+  const original = STATE.mutation.running;
+  STATE.mutation.running = true;
+  for(let i=0;i<6;i++){
+    setTimeout(()=>{ randomPatch(false); }, i*150);
+  }
+  setTimeout(()=> STATE.mutation.running = original, 2500);
+}
+
+/* ========= RANDOM PATCH GENERATOR ========= */
+async function randomPatch(withAudio=true){
+  await initAudio();
+  clearConnections();
+  const outs = ['perlin','worley','bitnoise','fm','fb','chaos','ks','rand'];
+  const ins = ['fm','fb','ks'];
+  const n = 3 + Math.floor(Math.random()*5);
+  for(let i=0;i<n;i++){
+    const from = outs[Math.floor(Math.random()*outs.length)];
+    const to = ins[Math.floor(Math.random()*ins.length)];
+    if(from===to) continue;
+    const outEl = document.querySelector(`[data-port="${from}:out"]`);
+    const inEl = document.querySelector(`[data-port="${to}:in"]`);
+    if(!outEl||!inEl) continue;
+    const a = getCenter(outEl), b = getCenter(inEl);
+    const svg = makePath(a.x,a.y,b.x,b.y);
+    STATE.connections.push({from:from+':out', to:to+':in', svg});
+    // mapping
+    if(withAudio) mapAudio(from,to);
+  }
+  // small randomized gestures
+  if(Math.random()>0.4) document.getElementById('fm-trig').click();
+  if(Math.random()>0.5) document.getElementById('ks-pluck').click();
+}
+
+/* ========= PORTS & SVG utils ========= */
+function getCenter(el){
+  const s = cablesSvg.getBoundingClientRect();
+  const r = el.getBoundingClientRect();
+  return {x: r.left + r.width/2 - s.left, y: r.top + r.height/2 - s.top};
+}
+function makePath(x1,y1,x2,y2){
+  const p = document.createElementNS('http://www.w3.org/2000/svg','path');
+  p.setAttribute('stroke','rgba(0,246,210,0.92)');
+  p.setAttribute('stroke-width','2.4'); p.setAttribute('fill','none');
+  const d = `M ${x1} ${y1} C ${(x1+x2)/2} ${y1}, ${(x1+x2)/2} ${y2}, ${x2} ${y2}`;
+  p.setAttribute('d', d); p.style.filter='drop-shadow(0 6px 12px rgba(0,246,210,0.06))';
+  cablesSvg.appendChild(p);
+  return p;
+}
+function redrawPaths(){ STATE.connections.forEach(c=>{ const fromEl = document.querySelector(`[data-port="${c.from}"]`); const toEl = document.querySelector(`[data-port="${c.to}"]`); if(!fromEl||!toEl) return; const a=getCenter(fromEl), b=getCenter(toEl); const d=`M ${a.x} ${a.y} C ${(a.x+b.x)/2} ${a.y}, ${(a.x+b.x)/2} ${b.y}, ${b.x} ${b.y}`; c.svg.setAttribute('d',d); }); }
+window.addEventListener('resize', redrawPaths);
+
+/* connection click logic (select out then in) */
+document.querySelectorAll('.port.output').forEach(out=>{
+  out.addEventListener('click', async (e)=>{ e.stopPropagation(); await initAudio(); if(STATE.selectedOut){ STATE.selectedOut.classList.remove('active'); STATE.selectedOut=null; } STATE.selectedOut = out; out.classList.add('active'); });
+});
+document.querySelectorAll('.port.input').forEach(inp=>{
+  inp.addEventListener('click', async (e)=>{ e.stopPropagation(); if(!STATE.selectedOut) return; const from = STATE.selectedOut.dataset.port; const to = inp.dataset.port; const a=getCenter(STATE.selectedOut), b=getCenter(inp); const svg = makePath(a.x,a.y,b.x,b.y); STATE.connections.push({from,to,svg}); STATE.selectedOut.classList.remove('active'); STATE.selectedOut=null; // map audio
+    const f = from.split(':')[0], t = to.split(':')[0]; mapAudio(f,t);
+  });
+});
+
+/* right-click to remove cable under cursor */
+cablesSvg.addEventListener('contextmenu', (e)=>{ e.preventDefault(); const el = document.elementFromPoint(e.clientX,e.clientY); if(el && el.tagName==='path'){ const idx = STATE.connections.findIndex(c=>c.svg===el); if(idx>=0){ STATE.connections[idx].svg.remove(); STATE.connections.splice(idx,1); } } });
+
+/* clear connections helper */
+function clearConnections(){ STATE.connections.forEach(c=>{ try{ c.svg.remove(); }catch(e){} }); STATE.connections=[]; if(STATE.nodes.fm && STATE.nodes.fm._ins){ STATE.nodes.fm._ins.forEach(i=>{ try{i.disconnect();}catch(e){} }); STATE.nodes.fm._ins=[]; } }
+
+/* ========= AUDIO MAPPING rules ========= */
+function mapAudio(from,to){
+  if(!STATE.audioInited) return;
+  try{
+    if(from==='perlin' && to==='fm'){
+      const g = new Tone.Gain(240).toDestination(); STATE.nodes.perlin.connect(g); g.connect(STATE.nodes.fm.frequency); (STATE.nodes.fm._ins = STATE.nodes.fm._ins||[]).push(g); return;
+    }
+    if(from==='perlin' && to==='ks'){ const g=new Tone.Gain(0.9); STATE.nodes.perlin.connect(g); STATE.nodes.ks._lfo=g; return; }
+    if(from==='worley' && to==='fb'){ STATE.nodes.worleyNoise.connect(STATE.nodes.fb); return; }
+    if(from==='bitnoise' && to==='fb'){ STATE.nodes.bitNoise.play(); return; }
+    if(from==='rand' && to==='fb'){ STATE.nodes.rand.trigger(); return; }
+    if(from==='fm' && to==='fb'){ STATE.nodes.fm.connect(STATE.nodes.fb); return; }
+    if(from==='chaos' && to==='fm'){ if(!STATE.nodes.fm._chaosHandle){ STATE.nodes.fm._chaosHandle = setInterval(()=>{ const v = (STATE.nodes.chaos && STATE.nodes.chaos.value) ? STATE.nodes.chaos.value*160 : 0; try{ STATE.nodes.fm.detune.value = v; }catch(e){} }, 90); } return; }
+    // fallback: connect to master
+    const fn = STATE.nodes[from]; if(fn && fn.connect) fn.connect(STATE.nodes.master);
+  }catch(err){ console.warn('mapAudio err',err); }
+}
+
+/* ========= SLIDERS (noUiSlider) ========= */
+function createSlider(el, opts, cb){ noUiSlider.create(el, opts); el.noUiSlider.on('update', v=>cb(v)); }
+
+/* small controls: energy, perlin, fm, fb, ks */
+createSlider(document.getElementById('energyWrap'), {start:[0.6],range:{min:0,max:1},step:0.01,connect:[true,false]}, v=>{ STATE.energy = Number(v[0]); STATE.mutation.rate = 1800 + (1-STATE.energy)*3000; });
+createSlider(document.getElementById('perlin-knob'), {start:[1.0],range:{min:0.05,max:8},step:0.01,connect:[true,false]}, v=>{ if(STATE.nodes.perlin) STATE.nodes.perlin.frequency.value = Number(v[0]); });
+createSlider(document.getElementById('p-freq'), {start:[1.0],range:{min:0.05,max:8},step:0.01,connect:[true,false]}, v=>{ if(STATE.nodes.perlin) STATE.nodes.perlin.frequency.value = Number(v[0]); });
+createSlider(document.getElementById('p-depth'), {start:[1.0],range:{min:0,max:3},step:0.01,connect:[true,false]}, v=>{/* depth mapping used elsewhere */});
+createSlider(document.getElementById('fm-index'), {start:[6],range:{min:0,max:40},step:0.2,connect:[true,false]}, v=>{ if(STATE.nodes.fm) STATE.nodes.fm.modulationIndex = Number(v[0]); });
+createSlider(document.getElementById('f-index'), {start:[6],range:{min:0,max:40},step:0.2,connect:[true,false]}, v=>{ if(STATE.nodes.fm) STATE.nodes.fm.modulationIndex = Number(v[0]); });
+createSlider(document.getElementById('fb-mix'), {start:[0.36],range:{min:0,max:1},step:0.01,connect:[true,false]}, v=>{ if(STATE.nodes.fb) STATE.nodes.fb.wet.value = Number(v[0]); });
+createSlider(document.getElementById('fb-delay'), {start:[250],range:{min:10,max:1000},step:1,connect:[true,false]}, v=>{ if(STATE.nodes.fb) STATE.nodes.fb.delayTime.value = Number(v[0])/1000; });
+createSlider(document.getElementById('fb-feedback'), {start:[0.45],range:{min:0,max:0.98},step:0.01,connect:[true,false]}, v=>{ if(STATE.nodes.fb) STATE.nodes.fb.feedback.value = Number(v[0]); });
+createSlider(document.getElementById('ks-damp'), {start:[0.5],range:{min:0,max:1},step:0.01,connect:[true,false]}, v=>{/* store locally if needed */});
+createSlider(document.getElementById('ks-damp2'), {start:[0.5],range:{min:0,max:1},step:0.01,connect:[true,false]}, v=>{/* backup */});
+createSlider(document.getElementById('ks-tune'), {start:[0],range:{min:-12,max:12},step:0.1,connect:[true,false]}, v=>{/* tune mapping later */});
+createSlider(document.getElementById('b-crush'), {start:[8],range:{min:2,max:16},step:1,connect:[true,false]}, v=>{ if(STATE.nodes.bit) STATE.nodes.bit.bits = Number(v[0]); });
+createSlider(document.getElementById('b-den'), {start:[0.5],range:{min:0.1,max:1},step:0.01,connect:[true,false]}, v=>{/* density mapping */});
+createSlider(document.getElementById('w-filter'), {start:[1000],range:{min:100,max:6000},step:10,connect:[true,false]}, v=>{ if(STATE.nodes.worleyFilter) STATE.nodes.worleyFilter.frequency.value = Number(v[0]); });
+createSlider(document.getElementById('w-int'), {start:[0.5],range:{min:0,max:1},step:0.01,connect:[true,false]}, v=>{/* unused */});
+createSlider(document.getElementById('r-crush'), {start:[6],range:{min:0,max:16},step:1,connect:[true,false]}, v=>{/* rand crush */});
+createSlider(document.getElementById('r-rate'), {start:[1],range:{min:0.25,max:4},step:0.01,connect:[true,false]}, v=>{/* rand rate */});
+
+/* ========= VISUALS (minimal & subtle) ========= */
+function initVisuals(){
+  // Perlin: smooth line
+  const per = document.getElementById('v-perlin'); per.width = per.clientWidth; per.height = per.clientHeight; const pctx = per.getContext('2d'); let t=0;
+  function n(x){ return (Math.sin(x*12.9898 + 78.233)*43758.5453)%1; }
+  function s(x){ return (n(x)+n(x+0.5)+n(x+1))/3; }
+  (function draw(){ pctx.fillStyle='rgba(0,0,0,0.18)'; pctx.fillRect(0,0,per.width,per.height); pctx.beginPath(); pctx.moveTo(0,per.height/2); for(let x=0;x<per.width;x++){ const v=s(t + x/120); const y = (v*2-1)*(per.height/2-6)+per.height/2; pctx.lineTo(x,y); } pctx.strokeStyle='rgba(0,246,210,0.95)'; pctx.lineWidth=1.4; pctx.stroke(); t+=0.01; requestAnimationFrame(draw); })();
+
+  // worley: sparse bubbles
+  const wor = document.getElementById('v-worley'); wor.width=wor.clientWidth; wor.height=wor.clientHeight; const wctx=wor.getContext('2d');
+  (function drawW(){ wctx.fillStyle='rgba(0,0,0,0.18)'; wctx.fillRect(0,0,wor.width,wor.height); for(let i=0;i<16;i++){ wctx.beginPath(); const x=Math.random()*wor.width; const y=Math.random()*wor.height; const r=4+Math.random()*20; wctx.fillStyle='rgba(0,246,210,0.03)'; wctx.arc(x,y,r,0,Math.PI*2); wctx.fill(); } requestAnimationFrame(drawW); })();
+
+  // bitnoise: sparse flicker
+  const bit = document.getElementById('v-bit'); bit.width=bit.clientWidth; bit.height=bit.clientHeight; const bctx=bit.getContext('2d');
+  (function drawB(){ bctx.fillStyle='rgba(0,0,0,0.15)'; bctx.fillRect(0,0,bit.width,bit.height); for(let i=0;i<80;i++){ bctx.fillStyle='rgba(0,246,210,0.02)'; bctx.fillRect(Math.random()*bit.width,Math.random()*bit.height,1,1); } requestAnimationFrame(drawB); })();
+
+  // fm: bar
+  const fm = document.getElementById('v-fm'); fm.width=fm.clientWidth; fm.height=fm.clientHeight; const fctx=fm.getContext('2d');
+  (function drawF(){ fctx.fillStyle='rgba(0,0,0,0.18)'; fctx.fillRect(0,0,fm.width,fm.height); fctx.fillStyle='rgba(0,246,210,0.9)'; const w = (STATE.nodes.fm && STATE.nodes.fm.modulationIndex ? STATE.nodes.fm.modulationIndex / 40 * fm.width : 0); fctx.fillRect(0,fm.height/2-8,w,16); requestAnimationFrame(drawF); })();
+
+  // fb: dots
+  const fb = document.getElementById('v-fb'); fb.width=fb.clientWidth; fb.height=fb.clientHeight; const fbctx=fb.getContext('2d');
+  (function drawFB(){ fbctx.clearRect(0,0,fb.width,fb.height); fbctx.fillStyle='rgba(0,0,0,0.18)'; fbctx.fillRect(0,0,fb.width,fb.height); for(let i=0;i<6;i++){ fbctx.fillStyle=`rgba(0,246,210,${0.06+i*0.09})`; fbctx.fillRect(i*(fb.width/6)+8,fb.height/2-6,8,12);} requestAnimationFrame(drawFB); })();
+
+  // chaos: Lorenz points
+  const ch = document.getElementById('v-chaos'); ch.width=ch.clientWidth; ch.height=ch.clientHeight; const cc=ch.getContext('2d');
+  let cx=0.1,cy=0,cz=0;
+  function lorenz(){ const a=10,b=28,c=8/3; const dx=a*(cy-cx); const dy=cx*(b-cz)-cy; const dz=cx*cy - c*cz; cx+=dx*0.007; cy+=dy*0.007; cz+=dz*0.007; STATE.nodes.chaos.value = cx+cy+cz; }
+  (function drawC(){ cc.fillStyle='rgba(0,0,0,0.18)'; cc.fillRect(0,0,ch.width,ch.height); lorenz(); const px=ch.width/2 + cx*10; const py=ch.height/2 + cy*10; cc.fillStyle='rgba(0,246,210,0.95)'; cc.fillRect(px,py,2,2); requestAnimationFrame(drawC); })();
+
+  // ks: text stays updated via actions
+  // rand: small noise field
+  const rr = document.getElementById('v-rand'); rr.width=rr.clientWidth; rr.height=rr.clientHeight; const rctx=rr.getContext('2d');
+  (function drawR(){ rctx.fillStyle='rgba(0,0,0,0.18)'; rctx.fillRect(0,0,rr.width,rr.height); for(let i=0;i<40;i++){ rctx.fillStyle='rgba(0,246,210,0.02)'; rctx.fillRect(Math.random()*rr.width,Math.random()*rr.height,2,2); } requestAnimationFrame(drawR); })();
+}
+
+/* ========= PANEL toggles (inline slide-down) ========= */
+document.querySelectorAll('.expand-toggle').forEach(btn=>{
+  btn.addEventListener('click', (e)=>{
+    const panelId = btn.dataset.target;
+    const panel = document.getElementById(panelId);
+    if(!panel) return;
+    panel.classList.toggle('open');
+  });
+});
+
+/* ========= Module actions ========== */
+document.getElementById('perlin-burst').addEventListener('click', async ()=>{ await initAudio(); const v = Math.random()*5+0.5; if(STATE.nodes.perlin) STATE.nodes.perlin.frequency.rampTo(v,0.12); });
+document.getElementById('worley-burst').addEventListener('click', ()=>{ /* visual pulse */ });
+document.getElementById('bit-burst').addEventListener('click', ()=>{ if(STATE.nodes.bitNoise) STATE.nodes.bitNoise.play(); });
+document.getElementById('fm-trig').addEventListener('click', async ()=>{ await initAudio(); STATE.nodes.fm.triggerAttackRelease('A3','200ms'); });
+document.getElementById('fb-burst').addEventListener('click', async ()=>{ await initAudio(); const s=new Tone.MembraneSynth().connect(STATE.nodes.fb); s.triggerAttackRelease('C2','8n'); });
+document.getElementById('chaos-nudge').addEventListener('click', ()=>{ if(STATE.nodes.chaos) STATE.nodes.chaos.value += (Math.random()*2-1)*0.6; });
+document.getElementById('ks-pluck').addEventListener('click', async ()=>{ await initAudio(); STATE.nodes.ks.triggerAttackRelease('C3','2n'); document.getElementById('v-ks').textContent += '\\nplucked @'+new Date().toLocaleTimeString(); });
+document.getElementById('rand-burst').addEventListener('click', async ()=>{ await initAudio(); STATE.nodes.rand.trigger(); });
+
+/* ========= top controls & shortcuts ========= */
+document.getElementById('playBtn').addEventListener('click', async ()=>{ await initAudio(); if(Tone.Transport.state!=='started'){ Tone.Transport.start(); document.getElementById('playBtn').textContent='⏸ Pause'; } else { Tone.Transport.stop(); document.getElementById('playBtn').textContent='▶ Play'; }});
+document.getElementById('stopBtn').addEventListener('click', ()=>{ Tone.Transport.stop(); document.getElementById('playBtn').textContent='▶ Play'; });
+document.getElementById('randomBtn').addEventListener('click', ()=> randomPatch());
+document.getElementById('evolveBtn').addEventListener('click', ()=> evolvePulse());
+document.getElementById('resetBtn').addEventListener('click', ()=> location.reload());
+
+document.addEventListener('keydown', (e)=>{
+  if(e.code==='Space'){ e.preventDefault(); document.getElementById('playBtn').click(); }
+  if(e.key==='r' || e.key==='R'){ randomPatch(); }
+  if(e.key==='e' || e.key==='E'){ evolvePulse(); }
+  if(e.key==='Escape'){ location.reload(); }
+});
+
+/* ========= Initialization and heartbeat ========= */
+(async function boot(){
+  initVisuals();
+  await initAudio();
+  startBioLoop();
+  startMutation();
+  // randomize patch initially
+  setTimeout(()=> randomPatch(), 600);
+  // periodic redraw paths
+  setInterval(redrawPaths, 100);
+})();
+
+/* ========= Helpers: redrawPaths wrapper ========= */
+function redrawPaths(){ try{ STATE.connections.forEach(c=>{ const fromEl = document.querySelector(`[data-port="${c.from}"]`); const toEl = document.querySelector(`[data-port="${c.to}"]`); if(!fromEl || !toEl) return; const a=getCenter(fromEl), b=getCenter(toEl); const d=`M ${a.x} ${a.y} C ${(a.x+b.x)/2} ${a.y}, ${(a.x+b.x)/2} ${b.y}, ${b.x} ${b.y}`; c.svg.setAttribute('d',d); }); }catch(e){} }
+function getCenter(el){ const s=cablesSvg.getBoundingClientRect(); const r=el.getBoundingClientRect(); return {x: r.left + r.width/2 - s.left, y: r.top + r.height/2 - s.top}; }
+
+</script>
+</body>
+</html>
+Index
